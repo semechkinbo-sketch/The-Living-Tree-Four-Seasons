@@ -7,7 +7,8 @@ function startLivingTree() {
 if (livingTreeStarted) return;
 /* The Living Tree: Four Seasons
    An interactive living painting: a detailed tree, four seasons in a loop,
-   day and night, rain, snow, wind. Everything is drawn in code, no external files. */
+   day and night, rain, snow, wind, drifting blossom petals in spring.
+   Everything is drawn in code, no external files. */
 'use strict';
 
 /* ---------- Seeded randomness: the tree is always the same ---------- */
@@ -379,6 +380,32 @@ function buildRotSprites() {
 	});
 }
 
+/* ---------- Spring blossom petals ---------- */
+const PETAL_COLORS = [
+	[255, 230, 238],   // pale, almost white
+	[250, 196, 212],   // light pink
+	[243, 168, 190]	// deeper pink
+];
+let petalSprites = [];
+function buildPetalSprites() {
+	petalSprites = PETAL_COLORS.map(c => {
+		const s = document.createElement('canvas');
+		s.width = s.height = 24;
+		const g = s.getContext('2d');
+		g.translate(12, 12);
+		const grad = g.createLinearGradient(0, -9, 0, 9);
+		grad.addColorStop(0, css([c[0], Math.min(255, c[1] + 16), Math.min(255, c[2] + 12)]));
+		grad.addColorStop(1, css([c[0] - 12, c[1] - 24, c[2] - 18]));
+		g.fillStyle = grad;
+		g.beginPath();
+		g.moveTo(0, -9);
+		g.bezierCurveTo(6.5, -6, 6.5, 5, 0, 9);
+		g.bezierCurveTo(-6.5, 5, -6.5, -6, 0, -9);
+		g.fill();
+		return s;
+	});
+}
+
 /* ---------- Far background, ground, stars (pre-render) ---------- */
 let hillsCanvas = null, groundCanvas = null, starsCanvas = null;
 function buildBackground() {
@@ -445,8 +472,17 @@ function buildBackground() {
 }
 
 /* ---------- Particles ---------- */
-let rainDrops = [], snowFlakes = [], groundLeaves = [], fireflies = [], flowers = [], birdsFly = [];
+let rainDrops = [], snowFlakes = [], groundLeaves = [], fireflies = [], flowers = [], birdsFly = [], petals = [];
 let birdTimer = 6;
+function newPetal(scattered) {
+	return {
+		x: treeCX + rand(-46, 46) * treeScale,
+		y: scattered ? rand(treeBase - 96 * treeScale, groundY - 10) : treeBase - rand(28, 96) * treeScale,
+		v: rand(14, 26), swayAmp: rand(10, 26), ph: rand(0, 6.28),
+		rot: rand(0, 6.28), spin: rand(-1.6, 1.6),
+		size: rand(5.5, 9), c: Math.floor(rand(0, 2.99)), land: 0
+	};
+}
 function buildParticles() {
 	rainDrops = []; snowFlakes = []; fireflies = []; groundLeaves = [];
 	flowers = [];
@@ -456,6 +492,8 @@ function buildParticles() {
 	for (let i = 0; i < 240; i++) rainDrops.push({ x: rand(0, W), y: rand(-H, 0), v: rand(900, 1250), len: rand(12, 22) });
 	for (let i = 0; i < 420; i++) snowFlakes.push({ x: rand(0, W), y: rand(-H, H), v: rand(35, 75), r: rand(1.0, 2.1), ph: rand(0, 6.28) });
 	for (let i = 0; i < 18; i++) fireflies.push({ x: rand(0, W), y: rand(groundY - H * 0.3, groundY), ph: rand(0, 6.28), sp: rand(0.2, 0.6) });
+	petals = [];
+	for (let i = 0; i < 22; i++) petals.push(newPetal(true));
 }
 
 /* ---------- Clouds ---------- */
@@ -986,6 +1024,50 @@ function drawSnow(dt, time) {
 	}
 }
 
+let petalFade = 0;					  /* smooth visibility of the blossom drift */
+function drawPetals(dt, time) {
+	/* petals drift only in mid and late spring; they ease in and out with the season */
+	const t4 = ((yearT % 4) + 4) % 4;
+	let target = 0;
+	if (t4 < 1) {
+		const sp = seasonProgress();
+		target = Math.min(Math.min(1, Math.max(0, (sp - 0.22) / 0.13)), Math.min(1, Math.max(0, (1 - sp) / 0.12)));
+	}
+	petalFade += (target - petalFade) * Math.min(1, dt * 1.6);
+	if (petalFade <= 0.02) return;
+	const rainCut = precipMode === 'rain' || precipMode === 'storm' ? 1 - precipLevel * 0.55 : 1;
+	const n = Math.ceil(petals.length * petalFade * rainCut);
+	const dim = (1 - dayNight * 0.45) * 0.96;
+	for (let i = 0; i < petals.length; i++) {
+		const p = petals[i];
+		if (p.land > 0) {
+			/* a landed petal rests on the ground for a moment, then a fresh one starts from the crown */
+			p.land -= dt;
+			if (p.land <= 0 || petalFade < 0.2) { Object.assign(p, newPetal(false)); continue; }
+			ctx.globalAlpha = Math.min(1, p.land) * 0.55 * dim;
+			ctx.save();
+			ctx.translate(p.x, p.y);
+			ctx.drawImage(petalSprites[p.c], -p.size, -p.size * 0.5, p.size * 2, p.size);
+			ctx.restore();
+			continue;
+		}
+		if (i >= n) continue;
+		p.rot += p.spin * dt;
+		p.y += p.v * dt * (0.8 + 0.4 * Math.sin(time * 1.1 + p.ph));
+		p.x += (Math.sin(time * 0.9 + p.ph) * p.swayAmp + windSmooth * 30) * dt;
+		if (p.x > W + 20) p.x = -10; else if (p.x < -20) p.x = W + 10;
+		if (p.y >= groundY - 2 - snowAmount * 16) { p.land = rand(0.8, 1.8); p.y = groundY - 2 - snowAmount * 16; }
+		const tumble = 0.7 + 0.3 * Math.sin(time * 2.3 + p.ph * 2);
+		ctx.globalAlpha = dim;
+		ctx.save();
+		ctx.translate(p.x, p.y);
+		ctx.rotate(p.rot);
+		ctx.drawImage(petalSprites[p.c], -p.size, -p.size * tumble, p.size * 2, p.size * 2 * tumble);
+		ctx.restore();
+	}
+	ctx.globalAlpha = 1;
+}
+
 function drawFireflies(time) {
 	if (!(dayNight > 0.6 && currentSeason() === 1)) return;
 	for (const f of fireflies) {
@@ -1261,6 +1343,7 @@ function frame(ms) {
 	}
 	if (!off.rain) drawRain(dt);
 	if (!off.snow) drawSnow(dt, time);
+	if (!off.petals) drawPetals(dt, time);
 	if (!off.flowers) drawFlowers(time);
 	if (!off.birds) drawBirds(dt, time);
 	if (!off.fireflies) drawFireflies(time);
@@ -1364,6 +1447,7 @@ let resizeTimer;
 window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(resize, 120); });
 buildLeafSprites();
 buildRotSprites();
+buildPetalSprites();
 resize();
 requestAnimationFrame(frame);
 
