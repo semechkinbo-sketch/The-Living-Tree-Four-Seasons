@@ -1321,6 +1321,14 @@ chips.forEach(c => c.addEventListener('click', e => {
 		pinnedSeason = i;
 		yearT = i + 0.35;      /* jump to mid-season, so the chosen season is recognizable at once */
 		if (i === 3) snowAmount = 0.85;   /* winter shows its snow cover immediately */
+		else {
+			snowAmount = 0;               /* picking another season clears the winter snow cover at once */
+			if (precipMode === 'snow') {  /* a running winter snowfall stops with the season change */
+				precipMode = 'off';
+				autoWeatherOff = false;
+				autoWeatherTimer = rand(30, 55);
+			}
+		}
 	}
 	chips.forEach(x => x.classList.toggle('pinned', pinnedSeason !== null && +x.dataset.season === pinnedSeason));
 }));
