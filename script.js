@@ -1,4 +1,6 @@
-/* Compatibility update: safe startup, bounded canvas memory, touch and keyboard controls. */
+/* Compatibility update: safe startup, bounded canvas memory, touch and keyboard controls.
+   Season buttons: a tap pins the chosen season at mid-stage (instantly recognizable);
+   tap the highlighted season again to resume the automatic cycle. */
 (function () {
 let livingTreeStarted = false;
 function startLivingTree() {
@@ -55,6 +57,7 @@ if (paramSeason) {
 	const i = SEASON_IDS.indexOf(paramSeason);
 	if (i >= 0) yearT = i + 0.35;
 }
+let pinnedSeason = null;				  // season index chosen by a tap; null = the automatic cycle runs
 let dayNight = paramTime === 'night' ? 1 : 0;   // 0 - day, 1 - night
 let dayNightTarget = dayNight;
 let windSmooth = 0.4, gust = 0, gustTarget = 0, gustTimer = 4;
@@ -1093,7 +1096,7 @@ let shownSeason = -1;
 
 function updateWorld(dt, time) {
 	/* the seasonal cycle */
-	if (!paramSeason || params.has('speed')) {
+	if ((!paramSeason && pinnedSeason === null) || params.has('speed')) {
 		yearT = (yearT + dt * speedMul / SEASON_SECONDS) % 4;
 	}
 	/* day/night */
@@ -1311,7 +1314,15 @@ else {
 chips.forEach(c => c.addEventListener('click', e => {
 	e.stopPropagation();
 	try { Sound.start(); } catch (_) { /* Sound must never block interaction. */ }
-	yearT = +c.dataset.season + 0.02;
+	const i = +c.dataset.season;
+	if (pinnedSeason === i) {
+		pinnedSeason = null;   /* tapping the highlighted season again resumes the automatic cycle */
+	} else {
+		pinnedSeason = i;
+		yearT = i + 0.35;      /* jump to mid-season, so the chosen season is recognizable at once */
+		if (i === 3) snowAmount = 0.85;   /* winter shows its snow cover immediately */
+	}
+	chips.forEach(x => x.classList.toggle('pinned', pinnedSeason !== null && +x.dataset.season === pinnedSeason));
 }));
 
 /* ---------- Scheduled nature sounds ---------- */
@@ -1384,4 +1395,3 @@ function boot() {
 }
 boot();
 })();
-

@@ -77,6 +77,15 @@ html, body {
 	transition: background 0.3s, color 0.3s, border-color 0.3s;
 }
 .chip:hover { background: rgba(255,255,255,0.18); }
+.chip.pinned::after {
+	content: "";
+	display: inline-block;
+	width: 5px;
+	height: 5px;
+	border-radius: 50%;
+	background: currentColor;
+	margin-left: 6px;
+}
 .chip.active {
 	background: rgba(255,255,255,0.85);
 	color: #1d2b1f;
@@ -91,4 +100,3 @@ html, body {
 #seasons { width: calc(100% - 16px); max-width: calc(100% - 16px); flex-wrap: wrap; justify-content: center; }
 .chip { touch-action: manipulation; }
 @supports (padding: env(safe-area-inset-bottom)) { #seasons { bottom: max(12px, env(safe-area-inset-bottom)); } }
-
