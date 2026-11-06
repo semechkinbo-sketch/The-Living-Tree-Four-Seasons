@@ -1,6 +1,6 @@
 /* Compatibility update: safe startup, bounded canvas memory, touch and keyboard controls.
-   Season buttons: a tap pins the chosen season at mid-stage (instantly recognizable);
-   tap the highlighted season again to resume the automatic cycle. */
+   Season buttons enter a season without pausing its living cycle.
+   Buds, leaves, flowers, leaf fall and snow develop continuously. */
 (function () {
 let livingTreeStarted = false;
 function startLivingTree() {
@@ -56,16 +56,16 @@ const SEASON_SECONDS = 80;				 // one season in the automatic cycle
 let yearT = 1.15;						  // 0..4 - continuous time of year
 if (paramSeason) {
 	const i = SEASON_IDS.indexOf(paramSeason);
-	if (i >= 0) yearT = i + 0.35;
+	if (i >= 0) yearT = i + 0.02;
 }
-let pinnedSeason = null;				  // season index chosen by a tap; null = the automatic cycle runs
+let previousSeason = currentSeason(); // detect natural boundaries without freezing the year
 let dayNight = paramTime === 'night' ? 1 : 0;   // 0 - day, 1 - night
 let dayNightTarget = dayNight;
 let windSmooth = 0.4, gust = 0, gustTarget = 0, gustTimer = 4;
 let precipMode = 'off';					// off|rain|snow|storm
-let precipLevel = 0;					   // smooth precipitation strength 0..1
+let precipLevel = 0, rainVisibility = 0, snowVisibility = 0;					   // smooth precipitation strength 0..1
 if (paramWeather && paramWeather !== 'clear') precipMode = paramWeather;
-let snowAmount = paramSeason === 'winter' ? 0.85 : 0;   // snow on branches and ground
+let snowAmount = 0;   // snow on branches and ground
 let autoWeatherTimer = rand(22, 38);
 let prevPrecipMode = 'off';
 let autoDN = paramTime ? false : true, dnTimer = 55;   /* automatic day/night cycle; tapping the sun/moon switches manually */
@@ -164,6 +164,7 @@ const Sound = {
 };
 
 /* ---------- Colors and palettes ---------- */
+function smoothstep(a, b, x) { const t = Math.max(0, Math.min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t); }
 function lerp(a, b, t) { return a + (b - a) * t; }
 function lerpC(c1, c2, t) {
 	return [lerp(c1[0], c2[0], t), lerp(c1[1], c2[1], t), lerp(c1[2], c2[2], t)];
@@ -187,7 +188,7 @@ function seasonWeights() {
 	const w = [0, 0, 0, 0];
 	const t = ((yearT % 4) + 4) % 4;
 	const i = Math.floor(t), f = t - i;
-	const blend = Math.max(0, (f - 0.75) / 0.25);   /* blend in the last 25% of the season */
+	const blend = smoothstep(0.70, 1, f);   /* blend in the last 25% of the season */
 	w[i] += 1 - blend; w[(i + 1) % 4] += blend;
 	return w;
 }
@@ -255,7 +256,7 @@ function buildTree() {
 				rot0: rand(0, Math.PI * 2),
 				grow: rand(0, 0.55),
 				colDelay: rand(0, 0.45),
-				fallAt: rand(0.45, 0.97),
+				fallAt: rand(0.14, 0.97),
 				hue: rng(),
 				winterKeep: rng() < 0.03,
 				state: 'attached', fx: 0, fy: 0, fvx: 0, fvy: 0, frot: 0, fspin: 0
@@ -319,8 +320,8 @@ function buildTree() {
 	{
 		const t4b = ((yearT % 4) + 4) % 4, spb = seasonProgress();
 		for (const lf of leaves) {
-			if (t4b >= 3) lf.state = 'gone';
-			else if (t4b >= 2 && spb > lf.fallAt) lf.state = 'gone';
+			if (t4b >= 3 && !lf.winterKeep) lf.state = 'gone';
+			else if (t4b >= 2 && t4b < 3 && spb > lf.fallAt && !lf.winterKeep) lf.state = 'gone';
 		}
 	}
 	/* moss on the north side (visible in spring and summer) */
@@ -915,24 +916,40 @@ function drawTree() {
 	}
 }
 
-/* Current leaf sprite by season and life stage */
-function leafSpriteIndex(leaf, stage, aMix) {
-	const t = ((yearT % 4) + 4) % 4;
-	if (t >= 3) return 6;								  // winter: dry leaf
-	if (t < 1) return 0;								  // spring
-	if (t < 2) return leaf.hue < 0.5 ? 1 : 2;			 // summer: two greens
-	/* autumn: green -> yellow/orange/red by hue and time */
-	const m = Math.min(1, Math.max(0, (aMix - leaf.colDelay) / 0.55));
-	if (m <= 0) return leaf.hue < 0.5 ? 1 : 2;
-	const aut = leaf.hue < 0.4 ? 3 : leaf.hue < 0.75 ? 4 : 5;
-	if (m >= 1) return aut;
-	return m < 0.5 ? (leaf.hue < 0.5 ? 1 : 2) : aut;	  // stepped, but offset in time
+/* Continuous leaf colour weights. Each boundary has matching end points. */
+function leafColors(leaf, t) {
+ const green = leaf.hue < 0.5 ? 1 : 2;
+ const autumn = leaf.hue < 0.4 ? 3 : leaf.hue < 0.75 ? 4 : 5;
+ if (t < 1) return [0, green, smoothstep(0.68, 1, t)];
+ if (t < 2) return [green, green, 0];
+ if (t < 3) {
+  const progress = t - 2;
+  const color = smoothstep(leaf.colDelay * 0.65, leaf.colDelay * 0.65 + 0.42, progress);
+  if (leaf.winterKeep && progress > 0.80) return [autumn, 6, smoothstep(0.80, 1, progress)];
+  return [green, autumn, color];
+ }
+ return [6, 6, 0];
+}
+
+/* Cache gradual colour blends so each leaf still needs only one draw call. */
+const blendedLeaves = [];
+function blendedLeaf(a, b, mix, rotation) {
+ const level = Math.round(mix * 16);
+ if (level === 0 || a === b) return rotSprites[a][rotation];
+ if (level === 16) return rotSprites[b][rotation];
+ const key = (((a * 7 + b) * 17 + level) * ROT_STEPS + rotation);
+ if (blendedLeaves[key]) return blendedLeaves[key];
+ const image = document.createElement('canvas'); image.width = image.height = 40;
+ const g = image.getContext('2d');
+ g.globalAlpha = 1 - level / 16; g.drawImage(rotSprites[a][rotation], 0, 0);
+ g.globalCompositeOperation = 'lighter'; g.globalAlpha = level / 16;
+ g.drawImage(rotSprites[b][rotation], 0, 0);
+ blendedLeaves[key] = image; return image;
 }
 
 let leafSkip = 1, slowAcc = 0, slowN = 0, adaptOff = false;
 function drawLeaves(time, mode) {
-	const stage = leafStage();
-	const aMix = autumnColorMix();
+	
 	const t4 = ((yearT % 4) + 4) % 4;
 	const sp = seasonProgress();
 	const nightDim = 1 - dayNight * 0.45;
@@ -945,55 +962,66 @@ function drawLeaves(time, mode) {
 		if (mode === 'falling' && leaf.state !== 'falling') continue;
 		if (leafSkip > 1 && leaf.state !== 'falling' && (li % leafSkip) !== 0) continue;
 		if (leaf.state === 'falling') {
-			const fc = Math.cos(leaf.frot) * DPR, fsn = Math.sin(leaf.frot) * DPR;
-			ctx.setTransform(fc, fsn, -fsn, fc, leaf.fx * DPR, leaf.fy * DPR);
-			ctx.globalAlpha = nightDim;
-			ctx.drawImage(leafSprites[leaf.hue < 0.4 ? 3 : (leaf.hue < 0.75 ? 4 : 5)], -leaf.size, -leaf.size, leaf.size * 2, leaf.size * 2);
-			ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-			ctx.globalAlpha = nightDim;
+            ctx.globalAlpha = nightDim;
+			/* Reuse the rotated sprites in flight too: no canvas transform per leaf. */
+			let ri = Math.round(leaf.frot * (ROT_STEPS / 6.2832)) % ROT_STEPS;
+			if (ri < 0) ri += ROT_STEPS;
+			const color = leaf.hue < 0.4 ? 3 : leaf.hue < 0.75 ? 4 : 5;
+			ctx.drawImage(rotSprites[color][ri], leaf.fx - leaf.size, leaf.fy - leaf.size, leaf.size * 2, leaf.size * 2);
 			continue;
 		}
 		const s = segments[leaf.seg];
 		segPt(s, leaf.t, _pt);
 		const x = _pt.x + _pt.nx * leaf.off * treeScale;
 		const y = _pt.y + _pt.ny * leaf.off * treeScale;
-		/* scale by season */
-		let scale = 1;
-		if (t4 < 1) {
-			scale = Math.min(1, Math.max(0, (sp * 1.6 - leaf.grow) / 0.5));
-			if (scale <= 0.02) {
-				/* bud */
-				ctx.fillStyle = css(lerpC([120, 90, 60], [150, 200, 110], sp), 0.9 * nightDim);
-				ctx.beginPath(); ctx.arc(x, y, 1.3, 0, 7); ctx.fill();
-				continue;
-			}
-		} else if (t4 >= 3) {
-			if (!leaf.winterKeep) continue;
-			scale = 0.55;
-		}
+		/* Buds emerge from invisible points after winter. Retained dry leaves
+           fade before the spring boundary, so no full crown appears in one frame. */
+        let scale = 1, opacity = 1;
+        if (t4 < 1) {
+            scale = smoothstep(leaf.grow / 1.6, (leaf.grow + 0.5) / 1.6, sp);
+            const bud = smoothstep(0, 0.12 + leaf.grow * 0.12, sp) * (1 - smoothstep(0.02, 0.22, scale));
+            if (bud > 0.001) {
+                ctx.globalAlpha = nightDim * bud;
+                ctx.fillStyle = css(lerpC([120,90,60], [150,200,110], sp), 0.9);
+                ctx.beginPath(); ctx.arc(x, y, 1.3, 0, 7); ctx.fill();
+            }
+            if (scale <= 0.001) continue;
+        } else if (t4 >= 3) {
+            if (!leaf.winterKeep) continue;
+            scale = 0.55;
+            opacity = 1 - smoothstep(0.72, 1, sp);
+        } else if (t4 >= 2 && leaf.winterKeep) {
+            scale = 1 - 0.45 * smoothstep(0.80, 1, sp);
+        }
+
 		const flut = Math.sin(time * (2.2 + leaf.hue) + leaf.phase) * (0.12 + windSmooth * 0.55);
 		let ri = Math.round((leaf.rot0 + flut) * (ROT_STEPS / 6.2832)) % ROT_STEPS;
 		if (ri < 0) ri += ROT_STEPS;
 		const sz = leaf.size * scale * (leafSkip > 1 ? 0.95 * Math.sqrt(leafSkip) : 1) * 1.25;
-		ctx.drawImage(rotSprites[leafSpriteIndex(leaf, stage, aMix)][ri], x - sz, y - sz, sz * 2, sz * 2);
+		const colors = leafColors(leaf, t4);
+        ctx.globalAlpha = nightDim * opacity;
+        ctx.drawImage(blendedLeaf(colors[0], colors[1], colors[2], ri), x - sz, y - sz, sz * 2, sz * 2);
+        ctx.globalAlpha = nightDim;
 	}
 	ctx.globalAlpha = 1;
 }
 
 /* ---------- Precipitation and effects ---------- */
 function drawRain(dt) {
-	if (precipLevel <= 0.02 || (precipMode !== 'rain' && precipMode !== 'storm')) return;
+	if (rainVisibility <= 0.002) return;
 	const slant = windSmooth * 260;
 	ctx.strokeStyle = 'rgba(190,205,228,0.55)';
 	ctx.lineWidth = 1;
 	ctx.beginPath();
-	const n = Math.floor(rainDrops.length * precipLevel);
+	const n = Math.ceil(rainDrops.length * rainVisibility);
+ ctx.save(); ctx.globalAlpha = Math.min(1, rainVisibility * 2);
 	for (let i = 0; i < n; i++) {
 		const d = rainDrops[i];
 		ctx.moveTo(d.x, d.y);
 		ctx.lineTo(d.x - slant * 0.02 * d.len * 0.1, d.y + d.len);
 	}
 	ctx.stroke();
+ ctx.restore();
 	for (let i = 0; i < n; i++) {
 		const d = rainDrops[i];
 		d.y += d.v * dt * (0.6 + precipLevel * 0.6);
@@ -1003,18 +1031,19 @@ function drawRain(dt) {
 	/* light haze near the ground */
 	const mg = ctx.createLinearGradient(0, groundY - 30, 0, groundY + 10);
 	mg.addColorStop(0, 'rgba(180,195,210,0)');
-	mg.addColorStop(1, 'rgba(180,195,210,' + (0.18 * precipLevel).toFixed(2) + ')');
+	mg.addColorStop(1, 'rgba(180,195,210,' + (0.18 * rainVisibility).toFixed(2) + ')');
 	ctx.fillStyle = mg;
 	ctx.fillRect(0, groundY - 30, W, 44);
 }
 
 let snowDrawn = 0;
 function drawSnow(dt, time) {
-	const snowing = precipMode === 'snow' && precipLevel > 0.02;
+	const snowing = snowVisibility > 0.002;
 	if (!snowing) return;
 	snowDrawn++;
-	ctx.fillStyle = dayNight > 0.5 ? 'rgba(225,232,245,0.9)' : 'rgba(255,255,255,0.92)';
-	const n = Math.floor(snowFlakes.length * precipLevel);
+	ctx.save(); ctx.globalAlpha = Math.min(1, snowVisibility * 2);
+ ctx.fillStyle = dayNight > 0.5 ? 'rgba(225,232,245,0.9)' : 'rgba(255,255,255,0.92)';
+	const n = Math.ceil(snowFlakes.length * snowVisibility);
 	for (let i = 0; i < n; i++) {
 		const f = snowFlakes[i];
 		f.y += f.v * dt * (0.7 + precipLevel * 0.5);
@@ -1022,6 +1051,7 @@ function drawSnow(dt, time) {
 		if (f.y > groundY - snowAmount * 18) { f.y = rand(-30, -5); f.x = rand(-20, W + 20); }
 		ctx.beginPath(); ctx.arc(f.x, f.y, f.r, 0, 7); ctx.fill();
 	}
+ctx.restore();
 }
 
 let petalFade = 0;					  /* smooth visibility of the blossom drift */
@@ -1069,14 +1099,15 @@ function drawPetals(dt, time) {
 }
 
 function drawFireflies(time) {
-	if (!(dayNight > 0.6 && currentSeason() === 1)) return;
+	const summerGlow = seasonWeights()[1] * smoothstep(0.5, 0.8, dayNight);
+ if (summerGlow < 0.002) return;
 	for (const f of fireflies) {
 		const glow = Math.max(0, Math.sin(time * f.sp * 2 + f.ph));
 		if (glow < 0.25) continue;
 		f.x += Math.sin(time * 0.4 + f.ph) * 0.25;
 		f.y += Math.cos(time * 0.33 + f.ph * 2) * 0.18;
 		ctx.save();
-		ctx.globalAlpha = glow * 0.85;
+		ctx.globalAlpha = glow * 0.85 * summerGlow;
 		const g = ctx.createRadialGradient(f.x, f.y, 0, f.x, f.y, 6);
 		g.addColorStop(0, 'rgba(220,255,150,0.9)');
 		g.addColorStop(1, 'rgba(220,255,150,0)');
@@ -1087,31 +1118,54 @@ function drawFireflies(time) {
 }
 
 function drawFlowers(time) {
-	const s = currentSeason();
-	if (s === 3 || s === 2) return;
-	const sp = seasonProgress();
-	const scale = s === 0 ? Math.min(1, sp * 1.8) : 1;
-	if (scale <= 0.05 || snowAmount > 0.25) return;
-	for (const f of flowers) {
+	const s = currentSeason(), sp = seasonProgress();
+	const growth = s === 0 ? Math.min(1, Math.max(0, (sp - 0.12) / 0.62)) : s === 1 ? 1 : s === 2 ? Math.max(0, 1 - sp / 0.20) : 0;
+	const snowCut = 1 - Math.min(1, snowAmount * 4);
+	if (growth <= 0.01 || snowCut <= 0) return;
+	ctx.save();
+	for (let n = 0; n < flowers.length; n++) {
+		const f = flowers[n];
+		const stagger = (f.ph / 6.28) * 0.25;
+		const scale = Math.min(1, Math.max(0, (growth - stagger) / (1 - stagger))) * snowCut;
+		if (scale <= 0.01) continue;
 		const sway = Math.sin(time * 1.8 + f.ph) * windSmooth * 2;
-		const x = f.x + sway, y = f.y;
-		const r = f.s * scale;
-		ctx.save();
-		ctx.globalAlpha = (1 - dayNight * 0.55) * Math.min(1, scale + 0.2);
-		ctx.fillStyle = css(f.c);
-		for (let p = 0; p < 5; p++) {
-			const a = p / 5 * Math.PI * 2 + f.ph;
-			ctx.beginPath(); ctx.arc(x + Math.cos(a) * r, y + Math.sin(a) * r, r * 0.75, 0, 7); ctx.fill();
+		const x = f.x + sway, y = f.y - (4 + f.s * 2) * scale, r = f.s * scale;
+		ctx.globalAlpha = (1 - dayNight * 0.55) * Math.min(1, scale * 2);
+		ctx.strokeStyle = '#527e35'; ctx.lineWidth = 1;
+		ctx.beginPath(); ctx.moveTo(f.x, f.y + 2); ctx.quadraticCurveTo(f.x - sway, y + 4, x, y); ctx.stroke();
+		const seedHead = n % 4 === 0 && (s === 1 || s === 2);
+		const seedProgress = seedHead ? (s === 2 ? 1 : smoothstep(0.22 + stagger, 0.72 + stagger, sp)) : 0;
+		if (!seedHead || seedProgress < 1) {
+            const flowerAlpha = ctx.globalAlpha; ctx.globalAlpha *= 1 - smoothstep(0.35, 0.65, seedProgress);
+			ctx.fillStyle = n % 4 === 0 ? '#f4d33a' : css(f.c);
+			for (let p = 0; p < (n % 4 === 0 ? 9 : 5); p++) {
+				const a = p / (n % 4 === 0 ? 9 : 5) * Math.PI * 2 + f.ph;
+				ctx.beginPath(); ctx.arc(x + Math.cos(a) * r, y + Math.sin(a) * r, r * 0.75, 0, 7); ctx.fill();
+			}
+			ctx.fillStyle = '#f8d348'; ctx.beginPath(); ctx.arc(x, y, r * 0.6, 0, 7); ctx.fill();
+            ctx.globalAlpha = flowerAlpha;
 		}
-		ctx.fillStyle = '#f8d348';
-		ctx.beginPath(); ctx.arc(x, y, r * 0.6, 0, 7); ctx.fill();
-		ctx.restore();
+        if (seedHead && seedProgress > 0.35) {
+			/* Ripened dandelions release tiny parachutes into a gust. */
+			ctx.strokeStyle = 'rgba(250,250,238,0.85)'; ctx.lineWidth = 0.65;
+			for (let p = 0; p < 10; p++) {
+				const a = p / 10 * Math.PI * 2;
+				const drift = Math.max(0, seedProgress - 0.67 - p * 0.025) * 120;
+				const dx = drift * (0.35 + windSmooth), dy = -drift * 0.32;
+				ctx.globalAlpha = (1 - dayNight * 0.55) * Math.max(0, 1 - drift / 55) * smoothstep(0.35, 0.65, seedProgress) * (1 - smoothstep(0.85, 1, seedProgress));
+				const tx = x + Math.cos(a) * r * 1.8 + dx, ty = y + Math.sin(a) * r * 1.8 + dy;
+				ctx.beginPath(); ctx.moveTo(x + dx, y + dy); ctx.lineTo(tx, ty); ctx.stroke();
+				ctx.beginPath(); ctx.arc(tx, ty, 0.7, 0, 7); ctx.stroke();
+			}
+		}
 	}
+	ctx.restore();
 }
 function drawBirds(dt, time) {
-	if (dayNight > 0.4 || currentSeason() === 3 || precipLevel > 0.4) { birdsFly.length = 0; return; }
+	const birdVisibility = (1 - seasonWeights()[3]) * (1 - smoothstep(0.30, 0.55, dayNight)) * (1 - smoothstep(0.30, 0.65, precipLevel));
+ ctx.save(); ctx.globalAlpha = birdVisibility;
 	birdTimer -= dt;
-	if (birdTimer <= 0 && birdsFly.length < 3) {
+	if (birdTimer <= 0 && birdsFly.length < 3 && birdVisibility > 0.2) {
 		birdsFly.push({ x: -30, y: rand(H * 0.15, H * 0.4), vx: rand(40, 70), ph: rand(0, 6.28) });
 		birdTimer = rand(9, 22);
 	}
@@ -1129,6 +1183,7 @@ function drawBirds(dt, time) {
 		ctx.quadraticCurveTo(b.x + 3, b.y - 3 - flap, b.x + 7, b.y + flap * 0.4);
 		ctx.stroke();
 	}
+ ctx.restore();
 }
 let lightningCount = 0, boltPts = [], boltBranches = [];
 function makeBolt() {
@@ -1178,8 +1233,23 @@ let shownSeason = -1;
 
 function updateWorld(dt, time) {
 	/* the seasonal cycle */
-	if ((!paramSeason && pinnedSeason === null) || params.has('speed')) {
-		yearT = (yearT + dt * speedMul / SEASON_SECONDS) % 4;
+	yearT = (yearT + dt * speedMul / SEASON_SECONDS) % 4;
+	const seasonNow = currentSeason();
+	if (seasonNow !== previousSeason) {
+		previousSeason = seasonNow;
+		if (seasonNow === 3) {
+			/* A winter begins bare, then fresh snowfall gradually settles. */
+			if (paramWeather !== 'clear') {
+				precipMode = 'snow'; autoWeatherOff = true; precipModeUntil = 35;
+			}
+			autoWeatherTimer = 12;
+		} else if (precipMode === 'snow') {
+			/* Spring keeps the settled cover, but stops the winter snowfall. */
+			precipMode = 'off'; autoWeatherOff = false; autoWeatherTimer = 16;
+		}
+		if (seasonNow === 0) {
+			for (const leaf of leaves) leaf.state = 'attached';
+		}
 	}
 	/* day/night */
 	if (autoDN) {
@@ -1224,15 +1294,17 @@ function updateWorld(dt, time) {
 	/* smooth precipitation strength */
 	const pTarget = precipMode === 'off' ? 0 : (precipMode === 'storm' ? 1 : 0.7);
 	precipLevel += (pTarget - precipLevel) * Math.min(1, dt * 0.8);
+ rainVisibility += (((precipMode === 'rain' || precipMode === 'storm') ? precipLevel : 0) - rainVisibility) * Math.min(1, dt * 0.65);
+ snowVisibility += ((precipMode === 'snow' ? precipLevel : 0) - snowVisibility) * Math.min(1, dt * 0.65);
 	Sound.setRain(precipMode === 'rain' || precipMode === 'storm' ? precipLevel : 0);
-	/* snow: builds up during snowfall, melts in spring */
-	if (precipMode === 'snow' && precipLevel > 0.25) {
-		snowAmount = Math.min(1, snowAmount + dt * 0.035 * precipLevel);
-	} else if (currentSeason() === 0) {
-		snowAmount = Math.max(0, snowAmount - dt * 0.06);
-	} else if (currentSeason() !== 3) {
-		snowAmount = Math.max(0, snowAmount - dt * 0.12);
-	}
+	/* Seasonal settling continues even between snow showers. At the year boundary
+	   the old cover remains and melts; only a manual season jump clears it. */
+	if (seasonNow === 3) {
+		const winterTarget = Math.min(1, seasonProgress() / 0.72);
+		snowAmount += (winterTarget - snowAmount) * Math.min(1, dt * 0.7);
+	} else if (seasonNow === 0) {
+		snowAmount = Math.max(0, snowAmount - dt * speedMul / (SEASON_SECONDS * 0.30));
+	} else snowAmount = Math.max(0, snowAmount - dt * 0.10);
 	/* storm: flashes and thunder */
 	if (precipMode === 'storm' && prevPrecipMode !== 'storm') lightningTimer = Math.min(lightningTimer, rand(3, 7));
 	prevPrecipMode = precipMode;
@@ -1250,7 +1322,7 @@ function updateWorld(dt, time) {
 	const sp = seasonProgress();
 	if (t4 >= 2 && t4 < 3) {
 		for (const leaf of leaves) {
-			if (leaf.state === 'attached' && sp > leaf.fallAt) {
+			if (leaf.state === 'attached' && !leaf.winterKeep && sp > leaf.fallAt) {
 				const s = segments[leaf.seg];
 				leaf.state = 'falling';
 				segPt(s, leaf.t, _pt);
@@ -1285,15 +1357,16 @@ function updateWorld(dt, time) {
 		if (!(t4 >= 2 && t4 < 3)) groundLeaves[i].life -= dt / (t4 >= 3 ? 30 : 20);
 		if (groundLeaves[i].life <= 0) groundLeaves.splice(i, 1);
 	}
-	if (((t4 < 1 && sp < 0.2) || (t4 >= 1 && t4 < 2)) && groundLeaves.length) groundLeaves.length = 0;
+
 	/* highlight of the active season */
 	const cs = currentSeason();
 	if (cs !== shownSeason) {
 		shownSeason = cs;
-		chips.forEach(c => c.classList.toggle('active', +c.dataset.season === cs));
+		chips.forEach(c => { c.classList.toggle('active', +c.dataset.season === cs); c.setAttribute('aria-pressed', String(+c.dataset.season === cs)); });
 	}
 }
 let precipModeUntil = 0, autoWeatherOff = false;
+if (currentSeason() === 3 && !paramWeather) { precipMode = 'snow'; autoWeatherOff = true; precipModeUntil = 35; }
 
 /* ---------- Main loop ---------- */
 let lastT = 0;
@@ -1394,26 +1467,34 @@ else {
  canvas.addEventListener('mousedown', e => { if (Date.now() - lastTouch > 700) tapCanvas(e); });
 }
 
+/* Manual choices restart the chosen story, never the clock. Rebuild only state,
+   not geometry, so winter-to-autumn also restores a full living crown. */
+function enterSeason(i) {
+	yearT = i + 0.02;
+	previousSeason = i;
+	for (const leaf of leaves) leaf.state = i === 3 && !leaf.winterKeep ? 'gone' : 'attached';
+	groundLeaves.length = 0;
+	petalFade = 0;
+	snowAmount = 0;
+	autoWeatherOff = false;
+	autoWeatherTimer = i === 3 ? 7 : rand(22, 35);
+	if (i === 3) {
+		precipMode = 'snow'; precipLevel = 0;
+		autoWeatherOff = true; precipModeUntil = 35;
+	} else if (precipMode === 'snow') {
+		precipMode = 'off'; precipLevel = 0; rainVisibility = 0; snowVisibility = 0;
+	}
+	treeCacheT = -1;
+	shownSeason = -1;
+	chips.forEach(x => { x.classList.toggle('active', +x.dataset.season === i); x.setAttribute('aria-pressed', String(+x.dataset.season === i)); });
+}
+
 chips.forEach(c => c.addEventListener('click', e => {
 	e.stopPropagation();
 	try { Sound.start(); } catch (_) { /* Sound must never block interaction. */ }
 	const i = +c.dataset.season;
-	if (pinnedSeason === i) {
-		pinnedSeason = null;   /* tapping the highlighted season again resumes the automatic cycle */
-	} else {
-		pinnedSeason = i;
-		yearT = i + 0.35;      /* jump to mid-season, so the chosen season is recognizable at once */
-		if (i === 3) snowAmount = 0.85;   /* winter shows its snow cover immediately */
-		else {
-			snowAmount = 0;               /* picking another season clears the winter snow cover at once */
-			if (precipMode === 'snow') {  /* a running winter snowfall stops with the season change */
-				precipMode = 'off';
-				autoWeatherOff = false;
-				autoWeatherTimer = rand(30, 55);
-			}
-		}
-	}
-	chips.forEach(x => x.classList.toggle('pinned', pinnedSeason !== null && +x.dataset.season === pinnedSeason));
+	enterSeason(i);
+
 }));
 
 /* ---------- Scheduled nature sounds ---------- */
@@ -1453,7 +1534,7 @@ requestAnimationFrame(frame);
 
 /* Control handle for state testing */
 window.__scene = {
-	setSeason(i, p) { yearT = i + (p === undefined ? 0.02 : p); },
+	setSeason(i, p) { enterSeason(i); yearT = i + (p === undefined ? 0.02 : p); },
 	setNight(v) { autoDN = false; dayNightTarget = v ? 1 : 0; dayNight = dayNightTarget; },
 	setWeather(m) { precipMode = m; precipLevel = m === 'off' ? 0 : 0.75; autoWeatherOff = false; autoWeatherTimer = 9999; },
 	setSnow(v) { snowAmount = v; },
@@ -1470,7 +1551,7 @@ window.__scene = {
 	snap() {
 		let att = 0, fall = 0;
 		for (const l of leaves) { if (l.state === 'attached') att++; else if (l.state === 'falling') fall++; }
-		return { season: currentSeason(), sp: +seasonProgress().toFixed(2), dayNight: +dayNight.toFixed(2), precipMode, precipLevel: +precipLevel.toFixed(2), snow: +snowAmount.toFixed(2), segs: segments.length, leaves: leaves.length, attached: att, falling: fall, ground: groundLeaves.length, wind: +windSmooth.toFixed(2), flakes: snowFlakes.length, f0: snowFlakes[0] ? [snowFlakes[0].x | 0, snowFlakes[0].y | 0] : null, snowDrawn, lightningCount, lightning: +lightning.toFixed(2) };
+		return { yearT, cycling: true, season: currentSeason(), sp: +seasonProgress().toFixed(2), dayNight: +dayNight.toFixed(2), precipMode, precipLevel: +precipLevel.toFixed(2), snow: +snowAmount.toFixed(2), segs: segments.length, leaves: leaves.length, attached: att, falling: fall, ground: groundLeaves.length, wind: +windSmooth.toFixed(2), flakes: snowFlakes.length, f0: snowFlakes[0] ? [snowFlakes[0].x | 0, snowFlakes[0].y | 0] : null, snowDrawn, lightningCount, lightning: +lightning.toFixed(2) };
 	}
 };
 

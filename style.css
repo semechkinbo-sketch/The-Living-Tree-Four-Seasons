@@ -100,3 +100,8 @@ html, body {
 #seasons { width: calc(100% - 16px); max-width: calc(100% - 16px); flex-wrap: wrap; justify-content: center; }
 .chip { touch-action: manipulation; }
 @supports (padding: env(safe-area-inset-bottom)) { #seasons { bottom: max(12px, env(safe-area-inset-bottom)); } }
+
+.chip { min-height: 44px; }
+.chip:focus-visible { outline: 2px solid white; outline-offset: 3px; }
+.chip { color: #fff; background: rgba(10, 20, 30, 0.65); }
+.chip.active { color: #1d2b1f; background: rgba(255,255,255,0.9); }

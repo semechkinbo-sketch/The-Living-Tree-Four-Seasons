@@ -26,7 +26,7 @@ An interactive living painting: a hand-coded tree that grows, blooms and sheds i
 | Tap the sun | Switch between day and night |
 | Tap the storm cloud | Cycle weather: rain → thunderstorm → snow → clear |
 | Tap the tree | A gust of wind |
-| Season buttons | Jump straight to a season and keep it there (a dot marks the pinned season); tap it again to resume the automatic cycle |
+| Season buttons | Jump to a season; time keeps flowing from there and the year continues with smooth, seamless transitions |
 
 ## 🔗 URL parameters
 
